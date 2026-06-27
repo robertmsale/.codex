@@ -1725,7 +1725,11 @@ mod tests {
     use tokio_tungstenite::connect_async;
     use tower::ServiceExt;
     use sqlx::Row;
+    use std::future::Future;
+    use std::pin::Pin;
     use std::sync::{Arc, Mutex as StdMutex};
+
+    type ModelHook = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
     #[derive(Default, Clone)]
     struct FakeModelClient {
@@ -1740,6 +1744,7 @@ mod tests {
         tool_arguments: Option<Value>,
         model_name: Option<&'static str>,
         request_delay_ms: Option<u64>,
+        before_return_tool: Option<ModelHook>,
     }
 
     fn assert_gui_operation_error(outputs: &[GuiTransportOutputPacket], context: &str) {
@@ -1783,6 +1788,9 @@ mod tests {
                     request_shape,
                     raw_response: json!({"output":[{"type":"message","content":[{"type":"output_text","text":final_text}]}]}),
                 }));
+            }
+            if let Some(hook) = &self.before_return_tool {
+                hook().await;
             }
             Ok(ModelInitialTurn::ToolCall(ModelToolTurn {
                 provider: "fake".to_string(),
@@ -2260,6 +2268,119 @@ mod tests {
         let unchanged_rendered = serde_json::to_string(&unchanged_shape).expect("unchanged shape json");
         assert!(!unchanged_rendered.contains("old_god_mode=inactive new_god_mode=active"), "{unchanged_rendered}");
         assert!(!unchanged_rendered.contains("old_god_mode=active new_god_mode=inactive"), "{unchanged_rendered}");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn tool_result_finalization_refreshes_role_authority_changed_during_tool_request() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("finalization-role-refresh"), ".", Some("."), None, None).await.expect("session");
+        let pool = test_db.pool.clone();
+        let before_version = role.role_version_id;
+        let model = FakeModelClient {
+            before_return_tool: Some(Arc::new(move || {
+                let pool = pool.clone();
+                Box::pin(async move {
+                    let draft: RoleEditorDraft = serde_json::from_value(json!({
+                        "id": "runtime-no-rg",
+                        "version": "99.99.200-finalization",
+                        "displayName": "Runtime No Rg",
+                        "modelDefaults": {"model": "gpt-5.4-mini", "reasoningEffort": "medium"},
+                        "instructionText": "latest role instructions visible during tool finalization",
+                        "capabilities": ["tool.execute_code"],
+                        "policy": {"tool.execute_code": "allow"},
+                        "routing": {"mode": "direct", "defaultRecipient": "owner", "allowedRecipients": ["owner"], "reservedActions": []},
+                        "visibility": {"listed": true, "ownerVisible": true},
+                        "lifecycleAuthority": {"canSpawnAgents": false, "canArchiveAgents": false, "reservedActions": []}
+                    })).expect("draft");
+                    let imported = crate::roles::imported_role_from_editor_draft(&draft).expect("imported role");
+                    db::import_role_version_with_actor(&pool, &imported, "gui-role-editor").await.expect("import role during tool request");
+                })
+            })),
+            ..Default::default()
+        };
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "tool request with role update before finalization", &model, compaction::CompactionBudget::default()).await.expect("send");
+        let shapes = model.observed_request_shapes.lock().expect("request shapes").clone();
+        assert!(shapes.len() >= 2, "tool request and finalization shapes required");
+        let final_rendered = serde_json::to_string(shapes.last().expect("final shape")).expect("final shape json");
+        assert!(final_rendered.contains("latest role instructions visible during tool finalization"), "{final_rendered}");
+        assert!(final_rendered.contains("<role_transition_summary"), "{final_rendered}");
+        assert!(final_rendered.contains("role_authority_changed"), "{final_rendered}");
+        assert!(final_rendered.contains(&before_version.to_string()), "{final_rendered}");
+        let after = db::session_role_snapshot(&test_db.pool, session_id).await.expect("after role");
+        assert!(final_rendered.contains(&after.role_version_id.to_string()), "{final_rendered}");
+        assert!(!final_rendered.contains("<runtime_context"), "{final_rendered}");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn tool_result_finalization_refreshes_god_mode_grant_during_tool_request_once() {
+        let test_db = validation_db().await;
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("finalization-god-mode-refresh"), ".", Some("."), None, None).await.expect("session");
+        let pool = test_db.pool.clone();
+        let model = FakeModelClient {
+            before_return_tool: Some(Arc::new(move || {
+                let pool = pool.clone();
+                Box::pin(async move {
+                    crate::god_mode::grant_session(&pool, session_id, "test", "grant during tool request", None).await.expect("grant god mode");
+                })
+            })),
+            ..Default::default()
+        };
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "tool request with god mode update before finalization", &model, compaction::CompactionBudget::default()).await.expect("send");
+        let shapes = model.observed_request_shapes.lock().expect("request shapes").clone();
+        let final_rendered = serde_json::to_string(shapes.last().expect("final shape")).expect("final shape json");
+        assert!(final_rendered.contains("god_mode_changed"), "{final_rendered}");
+        assert!(final_rendered.contains("old_god_mode=inactive new_god_mode=active"), "{final_rendered}");
+        assert!(!final_rendered.contains("<runtime_context"), "{final_rendered}");
+        let unchanged_model = FakeModelClient { direct_final_text: Some("ok"), ..Default::default() };
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "unchanged after finalization god mode", &unchanged_model, compaction::CompactionBudget::default()).await.expect("unchanged");
+        let unchanged = serde_json::to_string(unchanged_model.observed_request_shapes.lock().expect("request shapes").last().expect("unchanged shape")).expect("unchanged json");
+        assert!(!unchanged.contains("old_god_mode=inactive new_god_mode=active"), "{unchanged}");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn two_role_authority_changes_before_next_request_render_both_in_order() {
+        let test_db = validation_db().await;
+        let router = app(ServerState::new(test_db.pool.clone()));
+        let role = db::current_role_snapshot(&test_db.pool, "runtime-no-rg").await.expect("role");
+        let session_id = db::new_session(&test_db.pool, &role, Some("two-role-events"), ".", Some("."), None, None).await.expect("session");
+        let model = FakeModelClient { direct_final_text: Some("ok"), ..Default::default() };
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "initial", &model, compaction::CompactionBudget::default()).await.expect("initial");
+        let mut versions = Vec::new();
+        for (version, instruction, action) in [
+            ("99.99.201-first", "first role authority change", "file.head"),
+            ("99.99.202-second", "second role authority change", "file.tail"),
+        ] {
+            let mut draft = json!({
+                "id": "runtime-no-rg",
+                "version": version,
+                "displayName": "Runtime No Rg",
+                "modelDefaults": {"model": "gpt-5.4-mini", "reasoningEffort": "medium"},
+                "instructionText": instruction,
+                "capabilities": ["tool.execute_code", action],
+                "policy": {"tool.execute_code": "allow"},
+                "routing": {"mode": "direct", "defaultRecipient": "owner", "allowedRecipients": ["owner"], "reservedActions": []},
+                "visibility": {"listed": true, "ownerVisible": true},
+                "lifecycleAuthority": {"canSpawnAgents": false, "canArchiveAgents": false, "reservedActions": []}
+            });
+            draft["policy"][action] = json!("allow");
+            let (status, body) = request_json(router.clone(), Method::POST, "/roles/runtime-no-rg/versions", draft).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            versions.push(body["versionId"].as_str().expect("version id").to_string());
+        }
+        crate::runtime::send_with_model_client(&test_db.pool, session_id, "after two role changes", &model, compaction::CompactionBudget::default()).await.expect("after changes");
+        let rendered = serde_json::to_string(model.observed_request_shapes.lock().expect("request shapes").last().expect("shape")).expect("shape json");
+        assert!(rendered.contains("event_count=\\\"2\\\""), "{rendered}");
+        let first = rendered.find(&format!("new_role_version_id={}", versions[0])).expect("first version represented");
+        let second = rendered.find(&format!("new_role_version_id={}", versions[1])).expect("second version represented");
+        assert!(first < second, "{rendered}");
+        assert!(rendered.contains("file.head"), "{rendered}");
+        assert!(rendered.contains("file.tail"), "{rendered}");
+        assert!(!rendered.contains("<runtime_context"), "{rendered}");
         test_db.cleanup().await;
     }
 

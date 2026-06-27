@@ -1000,11 +1000,40 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
             }
         }
     }
+    let final_session = db::session_record(pool, session_id).await?;
+    let final_role_snapshot = db::session_role_snapshot(pool, session_id).await?;
+    let mut final_model_role_snapshot = final_role_snapshot.clone();
+    final_model_role_snapshot.instruction_text =
+        runtime_model_role_instructions(&final_role_snapshot.instruction_text);
+    let final_model_role_instructions = final_model_role_snapshot.instruction_text.clone();
+    let final_live_commands = command_registry::live_visible_commands(
+        pool,
+        &final_role_snapshot,
+        final_session.project_key.as_deref(),
+    )
+    .await?;
+    let final_previous_command_context = latest_command_context_evidence(pool, session_id).await?;
+    let final_runtime_command_context =
+        command_registry::runtime_command_context_message(&final_live_commands, final_previous_command_context.as_ref());
+    let final_context_snapshot = model_input::persist_context_snapshot(
+        pool,
+        &final_session,
+        &final_model_role_snapshot,
+        &final_runtime_command_context.evidence,
+        Some(turn_id),
+    )
+    .await?;
+    let final_runtime_messages =
+        model_input::runtime_developer_messages(&final_context_snapshot, &final_runtime_command_context);
+    let final_execute_code_contract =
+        command_registry::stable_execute_code_contract_with_god_mode_shell(crate::god_mode::active_grant(pool, session_id).await?.is_some());
+    let final_request_registry_contract = command_registry::request_tool_contract();
+
     let final_response = match model
         .submit_tool_result(
-            &model_role_snapshot,
+            &final_model_role_snapshot,
             &model_history,
-            &runtime_messages,
+            &final_runtime_messages,
             &plan.raw_response,
             &plan.tool_call.call_identity,
             &result_json,
@@ -1061,9 +1090,13 @@ pub async fn send_with_model_client<M: ModelClient + Sync + ?Sized>(
                 "model": final_response.request_shape.get("model").cloned(),
                 "roleInstructions": {
                     "source": "session.role_snapshot.instruction_text.normalized_for_model",
-                    "bytes": model_role_instructions.len(),
-                    "prefix": model_role_instructions.chars().take(80).collect::<String>(),
+                    "bytes": final_model_role_instructions.len(),
+                    "prefix": final_model_role_instructions.chars().take(80).collect::<String>(),
                 },
+                "commandContext": serde_json::to_value(&final_runtime_command_context.evidence).unwrap_or(Value::Null),
+                "runtimeInputMessages": final_runtime_messages.iter().map(|message| message.metadata.clone()).collect::<Vec<_>>(),
+                "executeCodeContract": final_execute_code_contract,
+                "requestCommandRegistryChangeContract": final_request_registry_contract,
                 "inputItems": final_response.request_shape.get("input").and_then(serde_json::Value::as_array).map(Vec::len),
                 "history": {"items": prior_history.len(), "source": "reconstructed_session_history"},
             },

@@ -191,7 +191,11 @@ fn role_authority_delta_text(summary: &Value) -> String {
         .unwrap_or_else(|| "capability changes not summarized".to_string());
     truncate_chars(
         &format!(
-            "Changed role authority: added actions [{}]; removed actions [{}]; changed decisions [{}]; {}.",
+            "Changed role authority: actor={} source={} previous_role_version_id={} new_role_version_id={}; added actions [{}]; removed actions [{}]; changed decisions [{}]; {}.",
+            summary.get("actor").and_then(Value::as_str).unwrap_or("unknown"),
+            summary.get("source").and_then(Value::as_str).unwrap_or("unknown"),
+            summary.get("previousRoleVersionId").and_then(Value::as_str).unwrap_or("unknown"),
+            summary.get("newRoleVersionId").and_then(Value::as_str).unwrap_or("unknown"),
             list(action_summary.get("addedActions")),
             list(action_summary.get("removedActions")),
             if changed.is_empty() { "none".to_string() } else { changed.join(", ") },

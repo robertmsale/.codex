@@ -998,6 +998,11 @@ one ordered bounded delta batch containing every pending event sequence and kind
 before advancing the consumed watermark. A grant-then-revoke God Mode sequence
 therefore appears as both the grant and revoke, not only the final inactive
 state.
+Tool-result finalization refreshes the same current role/context assembly
+immediately before submitting the tool result to the model, so role authority,
+God Mode, lifecycle, project, CWD, model, and tool-context mutations during a
+long-running tool are represented as current developer authority instead of
+using the stale request-start snapshot.
 Role authority or role-instruction changes append `role_authority_changed`,
 insert a concise `role_transition_summary`, and include the current
 `role_instructions` block instead of dumping the full role JSON. God Mode
