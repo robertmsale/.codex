@@ -1871,84 +1871,79 @@ class _RoleAuthorityEditor extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final selectedActions = rows.map((row) => row.action).toSet();
-    final availableActions = actions.where((action) => action.trim().isNotEmpty).toList(growable: false);
+    final rowByAction = {for (final row in rows) row.action: row};
+    final availableActions = _dedupeRoleManagerOptions([
+      ...actions,
+      ...rows.map((row) => row.action),
+    ]).where((action) => action.trim().isNotEmpty).toList(growable: false);
     final defaultDecision = decisions.contains('allow') ? 'allow' : decisions.isEmpty ? '' : decisions.first;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (rows.isEmpty)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Text(
+            rows.isEmpty ? 'Select the actions this role can use.' : 'Selected actions are saved with one decision each.',
+            style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF93A5BC)),
+          ),
+        ),
+        for (final action in availableActions)
           Padding(
             padding: const EdgeInsets.only(bottom: 10),
-            child: Text('Add an action to grant authority.', style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF93A5BC))),
-          ),
-        for (final row in rows)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
             child: Wrap(
-              spacing: 10,
+              spacing: 12,
               runSpacing: 8,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                _EnumSelect(
-                  key: ValueKey('roleEditor.authority.${row.action}'),
-                  label: 'Action',
-                  value: row.action,
-                  values: _withCurrentOptions(availableActions, row.action),
-                  onChanged: (value) {
-                    final next = <AgentRuntimeRolePolicyRow>[];
-                    for (final current in rows) {
-                      if (current.action == row.action) {
-                        if (!next.any((item) => item.action == value)) {
-                          next.add(AgentRuntimeRolePolicyRow(action: value, decision: current.decision));
-                        }
-                      } else if (current.action != value) {
-                        next.add(current);
-                      }
-                    }
-                    onChanged(next);
-                  },
-                  displayLabel: _roleManagerHumanLabel,
+                SizedBox(
+                  width: 260,
+                  child: CheckboxListTile(
+                    key: ValueKey('roleEditor.capability.$action'),
+                    value: rowByAction.containsKey(action),
+                    onChanged: defaultDecision.isEmpty
+                        ? null
+                        : (selected) {
+                            if (selected == true) {
+                              if (rowByAction.containsKey(action)) {
+                                return;
+                              }
+                              onChanged([
+                                ...rows,
+                                AgentRuntimeRolePolicyRow(action: action, decision: defaultDecision),
+                              ]);
+                            } else {
+                              onChanged(rows.where((current) => current.action != action).toList(growable: false));
+                            }
+                          },
+                    controlAffinity: ListTileControlAffinity.leading,
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: Text(_roleManagerHumanLabel(action), overflow: TextOverflow.ellipsis),
+                    subtitle: Text(action, overflow: TextOverflow.ellipsis),
+                  ),
                 ),
-                _EnumSelect(
-                  key: ValueKey('roleEditor.authorityDecision.${row.action}'),
-                  label: 'Decision',
-                  value: row.decision,
-                  values: _withCurrentOptions(decisions, row.decision),
-                  onChanged: (value) {
-                    onChanged([
-                      for (final current in rows)
-                        AgentRuntimeRolePolicyRow(action: current.action, decision: current.action == row.action ? value : current.decision),
-                    ]);
-                  },
-                  displayLabel: _roleManagerHumanLabel,
-                ),
-                TextButton(
-                  key: ValueKey('roleEditor.removeAuthority.${row.action}'),
-                  onPressed: () => onChanged(rows.where((current) => current.action != row.action).toList(growable: false)),
-                  child: const Text('Remove'),
-                ),
+                if (rowByAction[action] case final row?)
+                  _EnumSelect(
+                    key: ValueKey('roleEditor.policy.$action'),
+                    label: 'Decision',
+                    value: row.decision,
+                    values: _withCurrentOptions(decisions, row.decision),
+                    onChanged: (value) {
+                      onChanged([
+                        for (final current in rows)
+                          AgentRuntimeRolePolicyRow(action: current.action, decision: current.action == action ? value : current.decision),
+                      ]);
+                    },
+                    displayLabel: _roleManagerHumanLabel,
+                  )
+                else
+                  SizedBox(
+                    width: 210,
+                    child: Text('Not selected', style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF7D8EA3))),
+                  ),
               ],
             ),
           ),
-        Wrap(
-          spacing: 8,
-          runSpacing: 6,
-          children: [
-            for (final action in availableActions)
-              if (!selectedActions.contains(action))
-                ActionChip(
-                  key: ValueKey('roleEditor.addAuthority.$action'),
-                  label: Text(_roleManagerHumanLabel(action)),
-                  onPressed: defaultDecision.isEmpty
-                      ? null
-                      : () => onChanged([
-                            ...rows,
-                            AgentRuntimeRolePolicyRow(action: action, decision: defaultDecision),
-                          ]),
-                ),
-          ],
-        ),
       ],
     );
   }

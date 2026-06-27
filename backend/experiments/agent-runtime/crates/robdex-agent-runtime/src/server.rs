@@ -1707,6 +1707,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
     use crate::compaction;
+    use crate::gui_backend::GuiBackendController;
     use crate::model::{ModelClient, ModelFinalTurn, ModelHistoryItem, ModelInitialTurn, ModelToolTurn, RuntimeInputMessage, ToolCallRequest};
     use crate::roles::RoleSnapshot;
     use async_trait::async_trait;
@@ -1884,6 +1885,11 @@ mod tests {
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("body");
         let value = serde_json::from_slice(&bytes).unwrap_or_else(|error| panic!("json response parse failed: status={status}, error={error}, body={}", String::from_utf8_lossy(&bytes)));
         (status, value)
+    }
+
+    async fn test_snapshot_without_external_model_lookup(State(state): State<ServerState>) -> Result<Json<Value>, ApiError> {
+        let projection = projection::build_runtime_projection_snapshot(&state.pool, None).await?;
+        Ok(Json(serde_json::to_value(projection).map_err(anyhow::Error::from)?))
     }
 
     fn assert_api_error(value: &Value, code: &str) {
@@ -6222,6 +6228,121 @@ mod tests {
         let (status, error) = request_json(router, Method::POST, "/roles", invalid).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         assert_api_error(&error, "validation_failed");
+        test_db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn role_update_gui_operation_persists_current_authority_snapshot() {
+        let test_db = validation_db().await;
+        let state = ServerState::new(test_db.pool.clone());
+        let router = Router::new()
+            .route("/state/snapshot", get(test_snapshot_without_external_model_lookup))
+            .route("/state/ws", get(state_ws))
+            .route("/roles/{role_id}", get(show_role))
+            .route("/roles/{role_id}/versions", get(role_versions).post(update_role_from_draft))
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind role gui server");
+        let addr = listener.local_addr().expect("role gui addr");
+        let server_task = tokio::spawn(async move {
+            axum::serve(listener, router).await.expect("serve role gui server");
+        });
+        let base_url = format!("http://{addr}");
+        let before_version: Uuid = sqlx::query_scalar("SELECT current_version_id FROM roles WHERE id='project-progenitor'")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("before current version");
+        let before_count: i64 = sqlx::query_scalar("SELECT count(*) FROM role_versions WHERE role_id='project-progenitor'")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("before role version count");
+        let mut controller = GuiBackendController::new();
+        let connect = tokio::time::timeout(
+            Duration::from_secs(10),
+            controller.dispatch(GuiOperationRequest::Connect {
+                base_url,
+                selected_session_id: None,
+            }),
+        )
+        .await
+        .expect("role GUI connect timed out");
+        assert!(matches!(connect.outcome, GuiOperationOutcome::ProjectionUpdated { .. }), "connect outcome: {:?}", connect.outcome);
+
+        let draft: RoleEditorDraft = serde_json::from_value(json!({
+            "id": "project-progenitor",
+            "version": "99.99.99-gui",
+            "displayName": "Project Progenitor",
+            "modelDefaults": {"model": "gpt-5.4-mini", "reasoningEffort": "medium"},
+            "instructionText": "Project Progenitor GUI role editor persistence test instructions.",
+            "capabilities": ["git.status", "git.diff"],
+            "policy": {"git.status": "allow", "git.diff": "allow"},
+            "routing": {"mode": "direct", "defaultRecipient": "owner", "allowedRecipients": ["owner"], "reservedActions": []},
+            "visibility": {"listed": true, "ownerVisible": true},
+            "lifecycleAuthority": {"canSpawnAgents": false, "canArchiveAgents": false, "reservedActions": []}
+        }))
+        .expect("role editor draft");
+        let update = tokio::time::timeout(
+            Duration::from_secs(10),
+            controller.dispatch(GuiOperationRequest::UpdateRoleFromDraft {
+                role_id: "project-progenitor".to_string(),
+                draft,
+            }),
+        )
+        .await
+        .expect("role update GUI operation timed out");
+        assert!(matches!(update.outcome, GuiOperationOutcome::ProjectionUpdated { .. }), "update outcome: {:?}", update.outcome);
+
+        let after_version: Uuid = sqlx::query_scalar("SELECT current_version_id FROM roles WHERE id='project-progenitor'")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("after current version");
+        assert_ne!(before_version, after_version);
+        let after_count: i64 = sqlx::query_scalar("SELECT count(*) FROM role_versions WHERE role_id='project-progenitor'")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("after role version count");
+        assert_eq!(after_count, before_count + 1);
+        let actor: String = sqlx::query_scalar("SELECT created_by FROM role_versions WHERE id=$1")
+            .bind(after_version)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("created_by");
+        assert_eq!(actor, "gui-role-editor");
+        let current_snapshot = db::current_role_snapshot(&test_db.pool, "project-progenitor").await.expect("current snapshot");
+        assert_eq!(current_snapshot.role_version_id, after_version);
+        assert_eq!(current_snapshot.capabilities, vec!["git.status".to_string(), "git.diff".to_string()]);
+        assert_eq!(current_snapshot.policy.get("git.status"), Some(&crate::roles::ManifestDecision::Allow));
+        assert_eq!(current_snapshot.policy.get("git.diff"), Some(&crate::roles::ManifestDecision::Allow));
+        assert!(!current_snapshot.policy.contains_key("git.commit"));
+        let versions = db::role_versions(&test_db.pool, "project-progenitor").await.expect("versions");
+        assert!(versions.iter().any(|version| version["roleVersionId"] == after_version.to_string() && version["current"] == true && version["createdBy"] == "gui-role-editor"));
+        let projected = controller
+            .projection()
+            .expect("projection after update")
+            .roles
+            .iter()
+            .find(|role| role.id == "project-progenitor")
+            .expect("projected role");
+        let after_version_text = after_version.to_string();
+        assert_eq!(projected.current_version_id.as_deref(), Some(after_version_text.as_str()));
+        assert!(projected.capabilities.iter().any(|action| action == "git.status"));
+        assert!(projected.policy.iter().any(|(action, decision)| action == "git.diff" && decision == "allow"));
+        let reopened = crate::rinf_transport::AgentRuntimeWorkbenchViewModel::from_runtime_state(
+            "http://role-gui-test",
+            controller.projection(),
+            controller.controller_state(),
+            &[],
+            0,
+            None,
+            &crate::rinf_transport::AgentRuntimeDiscoveryView::default(),
+            &crate::rinf_transport::AgentRuntimeDiscoveryView::default(),
+            &crate::rinf_transport::AgentRuntimeDiscoveryView::default(),
+            &[],
+        );
+        let draft = reopened.role_admin.editor_draft.expect("reopened draft");
+        assert_eq!(draft.role_id, "project-progenitor");
+        assert!(draft.capabilities.iter().any(|action| action == "git.status"));
+        assert!(draft.policy.iter().any(|row| row.action == "git.diff" && row.decision == "allow"));
+        server_task.abort();
         test_db.cleanup().await;
     }
 

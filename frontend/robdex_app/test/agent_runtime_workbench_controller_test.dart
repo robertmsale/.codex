@@ -3131,14 +3131,20 @@ void main() {
     await tester.tap(find.text('gpt-5.4-mini').last);
     await tester.pump();
 
-    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.authorityDecision.command_registry.apply')));
-    await tester.tap(find.byKey(const ValueKey('roleEditor.authorityDecision.command_registry.apply')));
+    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.policy.command_registry.apply')));
+    await tester.tap(find.byKey(const ValueKey('roleEditor.policy.command_registry.apply')));
     await tester.pump();
     await tester.tap(find.text('Allow').last);
     await tester.pump();
 
-    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.authorityDecision.fs.write')));
-    await tester.tap(find.byKey(const ValueKey('roleEditor.authorityDecision.fs.write')));
+    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.capability.fs.write')));
+    await tester.tap(find.byKey(const ValueKey('roleEditor.capability.fs.write')));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('roleEditor.policy.fs.write')), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('roleEditor.capability.fs.write')));
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.policy.fs.write')));
+    await tester.tap(find.byKey(const ValueKey('roleEditor.policy.fs.write')));
     await tester.pump();
     await tester.tap(find.text('Deny').last);
     await tester.pump();
