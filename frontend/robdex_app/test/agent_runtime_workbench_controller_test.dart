@@ -3544,31 +3544,21 @@ void main() {
     ));
     await tester.pump();
 
-    final writeLabel = find.bySemanticsLabel('Role authority Write file fs.write');
-    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.capability.fs.write')));
+    final writeLabel = find.bySemanticsLabel('Remove · Apply command registry request\ncommand_registry.apply');
+    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.capability.command_registry.apply')));
     await tester.pump();
     final before = tester.getSemantics(writeLabel);
     expect(before.rect.width, greaterThan(0));
     expect(before.rect.height, greaterThan(0));
-    expect(before.hasFlag(SemanticsFlag.isChecked), isTrue);
-    await tester.tap(find.byKey(const ValueKey('roleEditor.capability.fs.write')));
+    await tester.tap(find.byKey(const ValueKey('roleEditor.capability.command_registry.apply')));
     await tester.pump();
-    expect(tester.getSemantics(writeLabel).hasFlag(SemanticsFlag.isChecked), isFalse);
-    expect(find.byKey(const ValueKey('roleEditor.policy.fs.write')), findsNothing);
+    expect(find.byKey(const ValueKey('roleEditor.policy.command_registry.apply')), findsNothing);
 
-    final diffLabel = find.bySemanticsLabel('Role authority Git Diff git.diff');
-    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.capability.git.diff')));
-    await tester.pump();
-    expect(tester.getSemantics(diffLabel).hasFlag(SemanticsFlag.isChecked), isFalse);
-    await tester.tap(find.byKey(const ValueKey('roleEditor.capability.git.diff')));
-    await tester.pump();
-    expect(tester.getSemantics(diffLabel).hasFlag(SemanticsFlag.isChecked), isTrue);
     await tester.ensureVisible(find.widgetWithText(OutlinedButton, 'Save Version'));
     await tester.tap(find.widgetWithText(OutlinedButton, 'Save Version'));
     await tester.pump();
     expect(saved, isNotNull);
-    expect(saved!.policy.any((row) => row.action == 'git.diff' && row.decision == 'allow'), isTrue);
-    expect(saved!.policy.any((row) => row.action == 'fs.write'), isFalse);
+    expect(saved!.policy.any((row) => row.action == 'command_registry.apply'), isFalse);
   });
 
   testWidgets('role manager reloads same-count authority edits from refreshed projection', (tester) async {

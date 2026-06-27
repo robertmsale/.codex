@@ -497,6 +497,7 @@ class _ComposerPanelState extends State<ComposerPanel> {
             acceptedTypeGroups: const <XTypeGroup>[
               XTypeGroup(
                 label: 'Images',
+                uniformTypeIdentifiers: <String>['public.image'],
                 extensions: <String>[
                   'png',
                   'jpg',

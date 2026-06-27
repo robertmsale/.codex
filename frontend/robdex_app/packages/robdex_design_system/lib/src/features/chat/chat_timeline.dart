@@ -1195,8 +1195,11 @@ class _AnimatedStatusDot extends StatelessWidget {
   }
 }
 
-void _copyBubbleText(BuildContext context, String text) {
-  Clipboard.setData(ClipboardData(text: text));
+Future<void> _copyBubbleText(BuildContext context, String text) async {
+  await Clipboard.setData(ClipboardData(text: text));
+  if (!context.mounted) {
+    return;
+  }
   ScaffoldMessenger.of(context).hideCurrentSnackBar();
   ScaffoldMessenger.of(context).showSnackBar(
     const SnackBar(

@@ -64,6 +64,7 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
   String _role = '';
   String _project = '';
   String _model = '';
+  String? _operationFeedback;
   bool _tracked = true;
 
   @override
@@ -141,6 +142,13 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
             child: Column(
             children: [
               _header(control),
+              if (_operationFeedback != null)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 8),
+                  color: const Color(0x3322C55E),
+                  child: Text(_operationFeedback!, style: const TextStyle(color: Color(0xFFBAF7C8), fontWeight: FontWeight.w700)),
+                ),
               Expanded(
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.fromLTRB(26, 18, 26, 28),
@@ -322,7 +330,10 @@ class _AgentRuntimeSessionControlPlaneState extends State<AgentRuntimeSessionCon
               ? 'Revoke God Mode…'
               : 'Grant God Mode…',
           Colors.orange,
-          () => control.godMode.active ? widget.onRevokeGodMode(control.sessionId) : widget.onGrantGodMode(control.sessionId),
+          () {
+            setState(() => _operationFeedback = control.godMode.active ? 'Revoking God Mode…' : 'Granting God Mode…');
+            control.godMode.active ? widget.onRevokeGodMode(control.sessionId) : widget.onGrantGodMode(control.sessionId);
+          },
         ),
         _quick('Set Requirements…', Colors.blueAccent, () => _showRequirementsAuthoring(control)),
         _quick('Export Bundle unavailable: no typed export', Colors.blueGrey, null),

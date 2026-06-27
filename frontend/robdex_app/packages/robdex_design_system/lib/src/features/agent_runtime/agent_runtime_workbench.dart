@@ -1675,14 +1675,6 @@ class _RoleManagerMainColumn extends StatelessWidget {
           },
         ),
         const SizedBox(height: 10),
-        SizedBox(
-          height: 238,
-          child: _RoleInstructionsEditorChrome(
-            controller: instructionController,
-            byteCount: instructionController.text.length,
-          ),
-        ),
-        const SizedBox(height: 14),
         Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -1712,6 +1704,14 @@ class _RoleManagerMainColumn extends StatelessWidget {
                 onAuthorityChanged: onAuthorityChanged,
               ),
             const SizedBox(height: 12),
+            SizedBox(
+              height: 238,
+              child: _RoleInstructionsEditorChrome(
+                controller: instructionController,
+                byteCount: instructionController.text.length,
+              ),
+            ),
+            const SizedBox(height: 14),
             _RoleEditorSection(
               title: 'Policy preview',
               child: _PolicyTable(policy: policy.isEmpty ? draft.policy : policy),
@@ -1871,7 +1871,7 @@ class _RoleManagerStructuredControls extends StatelessWidget {
   }
 }
 
-class _RoleAuthorityEditor extends StatelessWidget {
+class _RoleAuthorityEditor extends StatefulWidget {
   const _RoleAuthorityEditor({
     required this.rows,
     required this.actions,
@@ -1885,13 +1885,39 @@ class _RoleAuthorityEditor extends StatelessWidget {
   final ValueChanged<List<AgentRuntimeRolePolicyRow>> onChanged;
 
   @override
+  State<_RoleAuthorityEditor> createState() => _RoleAuthorityEditorState();
+}
+
+class _RoleAuthorityEditorState extends State<_RoleAuthorityEditor> {
+  late List<AgentRuntimeRolePolicyRow> _rows;
+
+  @override
+  void initState() {
+    super.initState();
+    _rows = widget.rows;
+  }
+
+  @override
+  void didUpdateWidget(covariant _RoleAuthorityEditor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_policyRowsSignature(oldWidget.rows) != _policyRowsSignature(widget.rows)) {
+      _rows = widget.rows;
+    }
+  }
+
+  void _updateRows(List<AgentRuntimeRolePolicyRow> rows) {
+    setState(() => _rows = rows);
+    widget.onChanged(rows);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final rowByAction = {for (final row in rows) row.action: row};
+    final rowByAction = {for (final row in _rows) row.action: row};
     final selectedActions = rowByAction.keys.toSet();
     final availableActions = _dedupeRoleManagerOptions([
-      ...actions,
-      ...rows.map((row) => row.action),
+      ...widget.actions,
+      ..._rows.map((row) => row.action),
     ]).where((action) => action.trim().isNotEmpty).toList();
     availableActions.sort((a, b) {
       final selectedCompare = (selectedActions.contains(b) ? 1 : 0).compareTo(selectedActions.contains(a) ? 1 : 0);
@@ -1901,92 +1927,118 @@ class _RoleAuthorityEditor extends StatelessWidget {
       return _roleManagerHumanLabel(a).compareTo(_roleManagerHumanLabel(b));
     });
     final normalizedDecisions = _dedupeRoleManagerOptions([
-      ...decisions,
-      if (!decisions.contains('allow')) 'allow',
-      if (!decisions.contains('deny')) 'deny',
+      ...widget.decisions,
+      if (!widget.decisions.contains('allow')) 'allow',
+      if (!widget.decisions.contains('deny')) 'deny',
     ]);
     final defaultDecision = normalizedDecisions.contains('allow') ? 'allow' : normalizedDecisions.first;
+    Widget authorityRow(String action) {
+      void toggle() => _updateRows(_toggledRoleAuthorityRows(action, rowByAction.containsKey(action), _rows, defaultDecision));
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                key: ValueKey('roleEditor.capability.$action'),
+                onPressed: toggle,
+                style: OutlinedButton.styleFrom(
+                  alignment: Alignment.centerLeft,
+                  foregroundColor: const Color(0xFFE6EDF7),
+                  side: BorderSide(color: rowByAction.containsKey(action) ? const Color(0xFF39D98A) : const Color(0xFF2E4054)),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${rowByAction.containsKey(action) ? 'Remove' : 'Select'} · ${_roleManagerHumanLabel(action)}',
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      action,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF7D8EA3)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (rowByAction[action] case final row?)
+              Padding(
+                padding: const EdgeInsets.only(left: 48, top: 4),
+                child: SizedBox(
+                  width: 210,
+                  child: ExcludeSemantics(
+                    child: _EnumSelect(
+                      key: ValueKey('roleEditor.policy.$action'),
+                      label: 'Decision',
+                      value: row.decision,
+                      values: _withCurrentOptions(normalizedDecisions, row.decision),
+                    onChanged: (value) {
+                      _updateRows([
+                        for (final current in _rows)
+                          AgentRuntimeRolePolicyRow(action: current.action, decision: current.action == action ? value : current.decision),
+                      ]);
+                      },
+                      displayLabel: _roleManagerHumanLabel,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      );
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
           padding: const EdgeInsets.only(bottom: 10),
           child: Text(
-            rows.isEmpty ? 'Select the actions this role can use.' : 'Selected actions are saved with one decision each.',
+            _rows.isEmpty ? 'Select the actions this role can use.' : 'Selected actions are saved with one decision each.',
             style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF93A5BC)),
           ),
         ),
-        for (final action in availableActions)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 10),
-            child: Wrap(
-              spacing: 12,
-              runSpacing: 8,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                SizedBox(
-                  width: 260,
-                  child: Semantics(
-                    label: 'Role authority ${_roleManagerHumanLabel(action)} $action',
-                    checked: rowByAction.containsKey(action),
-                    button: true,
-                    onTap: () => _toggleRoleAuthorityAction(action, rowByAction.containsKey(action), rows, defaultDecision, onChanged),
-                    child: ExcludeSemantics(
-                      child: CheckboxListTile(
-                        key: ValueKey('roleEditor.capability.$action'),
-                        value: rowByAction.containsKey(action),
-                        onChanged: (_) => _toggleRoleAuthorityAction(action, rowByAction.containsKey(action), rows, defaultDecision, onChanged),
-                        controlAffinity: ListTileControlAffinity.leading,
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        title: Text(_roleManagerHumanLabel(action), overflow: TextOverflow.ellipsis),
-                        subtitle: Text(action, overflow: TextOverflow.ellipsis),
-                      ),
-                    ),
-                  ),
-                ),
-                if (rowByAction[action] case final row?)
-                  _EnumSelect(
-                    key: ValueKey('roleEditor.policy.$action'),
-                    label: 'Decision',
-                    value: row.decision,
-                    values: _withCurrentOptions(normalizedDecisions, row.decision),
-                    onChanged: (value) {
-                      onChanged([
-                        for (final current in rows)
-                          AgentRuntimeRolePolicyRow(action: current.action, decision: current.action == action ? value : current.decision),
-                      ]);
-                    },
-                    displayLabel: _roleManagerHumanLabel,
-                  )
-                else
-                  SizedBox(
-                    width: 210,
-                    child: Text('Not selected', style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF7D8EA3))),
-                  ),
-              ],
+        SizedBox(
+          height: 64,
+          child: Scrollbar(
+            child: ListView.builder(
+              key: const ValueKey('roleEditor.authorityList'),
+              primary: false,
+              cacheExtent: 0,
+              itemCount: availableActions.length,
+              itemBuilder: (context, index) => authorityRow(availableActions[index]),
             ),
           ),
+        ),
       ],
     );
   }
 }
 
-void _toggleRoleAuthorityAction(
+String _policyRowsSignature(List<AgentRuntimeRolePolicyRow> rows) {
+  return rows.map((row) => '${row.action}\u{1f}${row.decision}').join('\u{1e}');
+}
+
+List<AgentRuntimeRolePolicyRow> _toggledRoleAuthorityRows(
   String action,
   bool selected,
   List<AgentRuntimeRolePolicyRow> rows,
   String defaultDecision,
-  ValueChanged<List<AgentRuntimeRolePolicyRow>> onChanged,
 ) {
   if (selected) {
-    onChanged(rows.where((current) => current.action != action).toList(growable: false));
-  } else {
-    onChanged([
-      ...rows,
-      AgentRuntimeRolePolicyRow(action: action, decision: defaultDecision),
-    ]);
+    return rows.where((current) => current.action != action).toList(growable: false);
   }
+  return [
+    ...rows,
+    AgentRuntimeRolePolicyRow(action: action, decision: defaultDecision),
+  ];
 }
 
 class _RoleEditorDivider extends StatelessWidget {

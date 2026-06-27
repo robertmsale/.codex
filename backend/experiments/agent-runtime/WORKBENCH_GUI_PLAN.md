@@ -142,6 +142,21 @@ typed Rust/Rinf operations or truthful unavailable states; image attachment
 failures name the failing stage and give a recovery path instead of generic
 upload copy.
 
+QA batch 7 regression rules: Role Authority rows must be iPad-accessible
+concrete action targets, never disabled switch exports or zero-frame offscreen
+actionables; the checkbox/label target changes selection only and the policy
+decision target remains a separate touch control. Create Project fields must
+keep Project key and Display name focus distinct through iPad keyboard entry.
+Open idle sessions expose owner-facing `Idle`/open lifecycle in typed API and
+projection data while any stored execution status stays in a separate internal
+field. God Mode grant/revoke actions must show visible feedback or a typed
+error. Command Registry rows use command-specific labels such as
+`Show cmd.git.status`. Process Manager and Workflow Memory surfaces need either
+real controls for existing rows or truthful empty/unavailable states. iPad image
+picker type groups use valid uniform type identifiers such as `public.image`.
+Copy message must write the exact message to the simulator pasteboard and show
+a visible confirmation.
+
 ## Direction
 
 The connected shell is a chat-first Robdex Workbench product using the shared conversation primitives.

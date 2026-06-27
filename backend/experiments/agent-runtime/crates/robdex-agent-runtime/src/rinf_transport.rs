@@ -1628,7 +1628,7 @@ fn command_registry_surface_actions(projection: Option<&RuntimeProjection>) -> V
     for command in &projection.command_registry {
         actions.push(AgentRuntimeWorkbenchActionRow {
             id: command.action_id.clone(),
-            title: "Show installed command".to_string(),
+            title: format!("Show {}", command.action_id),
             subtitle: command.binary_name.clone().unwrap_or_else(|| command.scope_type.clone()),
             kind: "commandRegistryShow".to_string(),
             state_text: if command.enabled { "enabled".to_string() } else { "disabled".to_string() },

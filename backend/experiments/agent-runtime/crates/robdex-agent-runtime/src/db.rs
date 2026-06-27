@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Row, postgres::PgPoolOptions};
 use uuid::Uuid;
@@ -688,7 +688,7 @@ pub async fn session_role_snapshot(pool: &PgPool, session_id: Uuid) -> Result<Ro
 }
 
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct SessionSummary {
     pub id: Uuid,
     pub status: String,
@@ -709,6 +709,48 @@ pub struct SessionSummary {
     pub parent_session_id: Option<Uuid>,
     pub session_kind: String,
     pub hidden: bool,
+}
+
+fn owner_session_lifecycle_status(status: &str, archived_at: Option<chrono::DateTime<chrono::Utc>>) -> &'static str {
+    if archived_at.is_some() {
+        "Archived"
+    } else if status == "stopped" {
+        "Idle"
+    } else if status == "running" {
+        "Running"
+    } else {
+        "Open"
+    }
+}
+
+impl Serialize for SessionSummary {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("SessionSummary", 20)?;
+        state.serialize_field("id", &self.id)?;
+        state.serialize_field("status", owner_session_lifecycle_status(&self.status, self.archived_at))?;
+        state.serialize_field("executionStatus", &self.status)?;
+        state.serialize_field("tracked", &self.tracked)?;
+        state.serialize_field("role_id", &self.role_id)?;
+        state.serialize_field("role_version", &self.role_version)?;
+        state.serialize_field("project_key", &self.project_key)?;
+        state.serialize_field("workdir", &self.workdir)?;
+        state.serialize_field("worktree_root", &self.worktree_root)?;
+        state.serialize_field("title", &self.title)?;
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("created_at", &self.created_at)?;
+        state.serialize_field("archived_at", &self.archived_at)?;
+        state.serialize_field("forked_from_session_id", &self.forked_from_session_id)?;
+        state.serialize_field("forked_from_turn_id", &self.forked_from_turn_id)?;
+        state.serialize_field("root_session_id", &self.root_session_id)?;
+        state.serialize_field("fork_depth", &self.fork_depth)?;
+        state.serialize_field("parent_session_id", &self.parent_session_id)?;
+        state.serialize_field("session_kind", &self.session_kind)?;
+        state.serialize_field("hidden", &self.hidden)?;
+        state.end()
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1209,7 +1251,7 @@ pub async fn show_session(pool: &PgPool, session_id: Uuid) -> Result<Value> {
     Ok(json!({
         "session": session,
         "role": {"id": role.id, "version": role.version, "displayName": role.display_name},
-        "lifecycle": {"status": session.status, "tracked": session.tracked, "archivedAt": session.archived_at},
+        "lifecycle": {"status": owner_session_lifecycle_status(&session.status, session.archived_at), "executionStatus": session.status, "tracked": session.tracked, "archivedAt": session.archived_at},
         "projectRuntime": {"activeVersionId": runtime_attribution.0, "activeHookBindings": runtime_attribution.1},
         "workflow": {"activeContracts": active_contracts, "activeResourceLeases": resource_leases, "recentHookFailures": recent_hook_failures},
         "subagents": subagent_projection,

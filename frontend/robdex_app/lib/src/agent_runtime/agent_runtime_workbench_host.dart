@@ -778,19 +778,16 @@ class _RuntimeTextField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Semantics(
-      label: label,
-      textField: true,
-      child: TextField(
-        controller: controller,
-        readOnly: readOnly,
-        autocorrect: false,
-        enableSuggestions: false,
-        smartDashesType: SmartDashesType.disabled,
-        smartQuotesType: SmartQuotesType.disabled,
-        textInputAction: textInputAction,
-        decoration: _runtimeInputDecoration(hintText: hintText).copyWith(labelText: label),
-      ),
+    return TextField(
+      key: key,
+      controller: controller,
+      readOnly: readOnly,
+      autocorrect: false,
+      enableSuggestions: false,
+      smartDashesType: SmartDashesType.disabled,
+      smartQuotesType: SmartQuotesType.disabled,
+      textInputAction: textInputAction,
+      decoration: _runtimeInputDecoration(hintText: hintText).copyWith(labelText: label),
     );
   }
 }

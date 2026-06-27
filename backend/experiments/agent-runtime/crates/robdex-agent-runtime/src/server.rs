@@ -366,7 +366,7 @@ async fn snapshot(
             .map(|approval| json!({"kind":"approval","id": approval.id, "status": approval.status}))
             .chain(projection.command_registry_requests.iter().map(|request| json!({"kind":"commandRegistry","id": request.id, "status": request.status})))
             .collect::<Vec<_>>();
-        object.insert("selectedSessionIdentity".to_string(), json!(projection.selected_session.as_ref().map(|session| json!({"id": session.id, "title": session.title, "status": session.status}))));
+                object.insert("selectedSessionIdentity".to_string(), json!(projection.selected_session.as_ref().map(|session| json!({"id": session.id, "title": session.title, "status": if session.status == "stopped" { "Idle" } else { session.status.as_str() }, "executionStatus": session.status}))));
         object.insert("selectedProjectIdentity".to_string(), json!(selected_project_id.as_ref().map(|project| json!({"id": project, "displayLabel": project}))));
         object.insert("modalSurfaceSummaries".to_string(), json!(modal_surface_summaries));
         object.insert("pendingActions".to_string(), json!(pending_actions));
