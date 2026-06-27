@@ -66,7 +66,10 @@ def validate_shot_args(parser: argparse.ArgumentParser, shot_args: list[str]) ->
         "--skip-ready": "visual proof must wait for the Design Lab readiness signal",
     }
     backend_override_options = {
-        "--backend": "design-lab-capture uses the project screenshot backend default",
+        "--backend": (
+            "Chrome backend is disabled. Use only the built-in Bun WebView Webkit backend "
+            "by omitting --backend (default backend)."
+        ),
     }
     for arg in shot_args:
         option = arg.split("=", 1)[0]
@@ -123,10 +126,7 @@ def run_phase(phase: str, argv: list[str], cwd: Path, timeout: float, log_path: 
 
 
 def run_capture_with_recovery(args: argparse.Namespace, url: str, shot_args: list[str], lab_dir: Path, log_path: Path, out_path: Path) -> None:
-    attempts: list[tuple[str, list[str]]] = [
-        ("default-backend", []),
-        ("chrome-backend-retry", ["--backend", "chrome"]),
-    ]
+    attempts: list[tuple[str, list[str]]] = [("default-backend", [])]
     last_error: CaptureError | None = None
     for attempt_name, recovery_args in attempts:
         if out_path.exists():
