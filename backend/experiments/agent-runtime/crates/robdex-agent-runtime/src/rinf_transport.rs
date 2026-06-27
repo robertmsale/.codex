@@ -3931,7 +3931,7 @@ mod tests {
                 })
             }))
             .route("/sessions", post(Json(json!({"sessionId":"00000000-0000-0000-0000-00000000c002"}))))
-            .route("/roles/editor/options", get(Json(json!({"policyDecisions":["allow","deny"],"routingModes":["direct"],"defaultRecipients":["owner"],"knownActions":["tool.execute_code"]}))))
+            .route("/roles/editor/options", get(Json(json!({"policyDecisions":["allow","deny","ownerApproval","orchestratorApproval"],"routingModes":["direct"],"defaultRecipients":["owner"],"knownActions":["tool.execute_code"]}))))
             .route("/roles/editor/validate", post(Json(json!({"valid":true,"errors":[],"warnings":[],"roleId":"gui-role","version":"1.0.0"}))))
             .route("/roles", post(Json(json!({"roleId":"gui-role","versionId":"role-version-1","status":"created"}))))
             .route("/roles/gui-role/versions", post(Json(json!({"roleId":"gui-role","versionId":"role-version-2","status":"updated"}))).get(Json(json!([{"roleVersionId":"role-version-1","version":"1.0.0","current":true}]))))
@@ -6631,15 +6631,18 @@ mod tests {
                 },
             ))
             .await;
-        assert!(options.iter().any(|packet| matches!(
-            &packet.output,
+        let decision_values = options.iter().find_map(|packet| match &packet.output {
             GuiTransportOutput::OperationResult {
                 result: GuiOperationResult {
                     outcome: GuiOperationOutcome::DirectValue { value },
                     ..
-                }
-            } if value["policyDecisions"].is_array()
-        )));
+                },
+            } => value["policyDecisions"].as_array().cloned(),
+            _ => None,
+        }).expect("role editor decisions returned");
+        for expected in ["allow", "deny", "ownerApproval", "orchestratorApproval"] {
+            assert!(decision_values.iter().any(|value| value == expected), "missing policy decision {expected}: {decision_values:?}");
+        }
 
         let validate = transport
             .send(packet(

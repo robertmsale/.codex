@@ -1871,6 +1871,8 @@ class _RoleManagerStructuredControls extends StatelessWidget {
   }
 }
 
+const String _rolePolicyOffDecision = 'off';
+
 class _RoleAuthorityEditor extends StatefulWidget {
   const _RoleAuthorityEditor({
     required this.rows,
@@ -1890,6 +1892,7 @@ class _RoleAuthorityEditor extends StatefulWidget {
 
 class _RoleAuthorityEditorState extends State<_RoleAuthorityEditor> {
   late List<AgentRuntimeRolePolicyRow> _rows;
+  final Set<String> _selectedRows = <String>{};
 
   @override
   void initState() {
@@ -1903,94 +1906,169 @@ class _RoleAuthorityEditorState extends State<_RoleAuthorityEditor> {
     if (_policyRowsSignature(oldWidget.rows) != _policyRowsSignature(widget.rows)) {
       _rows = widget.rows;
     }
+    final available = _availableActions().toSet();
+    _selectedRows.removeWhere((action) => !available.contains(action));
   }
 
-  void _updateRows(List<AgentRuntimeRolePolicyRow> rows) {
-    setState(() => _rows = rows);
-    widget.onChanged(rows);
+  List<String> _availableActions() {
+    final actions = _dedupeRoleManagerOptions([
+      ...widget.actions,
+      ..._rows.map((row) => row.action),
+    ]).where((action) => action.trim().isNotEmpty).toList();
+    actions.sort((a, b) => _roleManagerHumanLabel(a).compareTo(_roleManagerHumanLabel(b)));
+    return actions;
+  }
+
+  List<String> _decisionValues(String current) {
+    return _dedupeRoleManagerOptions([
+      _rolePolicyOffDecision,
+      ...widget.decisions,
+      'allow',
+      'deny',
+      'ownerApproval',
+      'orchestratorApproval',
+      if (current.trim().isNotEmpty) current,
+    ]);
+  }
+
+  void _emitRows(Map<String, AgentRuntimeRolePolicyRow> rowByAction, List<String> actionOrder) {
+    final order = {for (var i = 0; i < actionOrder.length; i += 1) actionOrder[i]: i};
+    final next = rowByAction.values.toList(growable: false)
+      ..sort((a, b) {
+        final aOrder = order[a.action] ?? 1000000;
+        final bOrder = order[b.action] ?? 1000000;
+        if (aOrder != bOrder) {
+          return aOrder.compareTo(bOrder);
+        }
+        return a.action.compareTo(b.action);
+      });
+    setState(() => _rows = next);
+    widget.onChanged(next);
+  }
+
+  void _toggleSelection(String action, bool? selected) {
+    setState(() {
+      if (selected ?? false) {
+        _selectedRows.add(action);
+      } else {
+        _selectedRows.remove(action);
+      }
+    });
+  }
+
+  void _selectAll(List<String> actions) {
+    setState(() {
+      _selectedRows
+        ..clear()
+        ..addAll(actions);
+    });
+  }
+
+  void _clearSelection() {
+    setState(() => _selectedRows.clear());
+  }
+
+  void _applyDecision(String action, String decision, List<String> actionOrder) {
+    final rowByAction = {for (final row in _rows) row.action: row};
+    final targets = _selectedRows.isNotEmpty && _selectedRows.contains(action) ? _selectedRows.toList(growable: false) : <String>[action];
+    for (final target in targets) {
+      if (decision == _rolePolicyOffDecision) {
+        rowByAction.remove(target);
+      } else {
+        rowByAction[target] = AgentRuntimeRolePolicyRow(action: target, decision: decision);
+      }
+    }
+    _emitRows(rowByAction, actionOrder);
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final rowByAction = {for (final row in _rows) row.action: row};
-    final selectedActions = rowByAction.keys.toSet();
-    final availableActions = _dedupeRoleManagerOptions([
-      ...widget.actions,
-      ..._rows.map((row) => row.action),
-    ]).where((action) => action.trim().isNotEmpty).toList();
-    availableActions.sort((a, b) {
-      final selectedCompare = (selectedActions.contains(b) ? 1 : 0).compareTo(selectedActions.contains(a) ? 1 : 0);
-      if (selectedCompare != 0) {
-        return selectedCompare;
-      }
-      return _roleManagerHumanLabel(a).compareTo(_roleManagerHumanLabel(b));
-    });
-    final normalizedDecisions = _dedupeRoleManagerOptions([
-      ...widget.decisions,
-      if (!widget.decisions.contains('allow')) 'allow',
-      if (!widget.decisions.contains('deny')) 'deny',
-    ]);
-    final defaultDecision = normalizedDecisions.contains('allow') ? 'allow' : normalizedDecisions.first;
+    final availableActions = _availableActions();
+    final selectedCount = _selectedRows.length;
+
     Widget authorityRow(String action) {
-      void toggle() => _updateRows(_toggledRoleAuthorityRows(action, rowByAction.containsKey(action), _rows, defaultDecision));
+      final row = rowByAction[action];
+      final decision = row?.decision ?? _rolePolicyOffDecision;
+      final selected = _selectedRows.contains(action);
+      final humanLabel = _roleManagerHumanLabel(action);
       return Padding(
         padding: const EdgeInsets.only(bottom: 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton(
-                key: ValueKey('roleEditor.capability.$action'),
-                onPressed: toggle,
-                style: OutlinedButton.styleFrom(
-                  alignment: Alignment.centerLeft,
-                  foregroundColor: const Color(0xFFE6EDF7),
-                  side: BorderSide(color: rowByAction.containsKey(action) ? const Color(0xFF39D98A) : const Color(0xFF2E4054)),
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                ),
-                child: Column(
+        child: Semantics(
+          container: true,
+          explicitChildNodes: true,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: const Color(0xFF101B27),
+              border: Border.all(color: selected ? const Color(0xFF39D98A) : const Color(0xFF24364A)),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final narrow = constraints.maxWidth < 560;
+                final label = Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      '${rowByAction.containsKey(action) ? 'Remove' : 'Select'} · ${_roleManagerHumanLabel(action)}',
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                    Text(humanLabel, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodyMedium?.copyWith(color: const Color(0xFFE6EDF7), fontWeight: FontWeight.w800)),
                     const SizedBox(height: 2),
-                    Text(
-                      action,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF7D8EA3)),
-                    ),
+                    Text(action, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF93A5BC))),
                   ],
-                ),
-              ),
-            ),
-            if (rowByAction[action] case final row?)
-              Padding(
-                padding: const EdgeInsets.only(left: 48, top: 4),
-                child: SizedBox(
-                  width: 210,
-                  child: ExcludeSemantics(
-                    child: _EnumSelect(
-                      key: ValueKey('roleEditor.policy.$action'),
-                      label: 'Decision',
-                      value: row.decision,
-                      values: _withCurrentOptions(normalizedDecisions, row.decision),
-                    onChanged: (value) {
-                      _updateRows([
-                        for (final current in _rows)
-                          AgentRuntimeRolePolicyRow(action: current.action, decision: current.action == action ? value : current.decision),
-                      ]);
-                      },
-                      displayLabel: _roleManagerHumanLabel,
+                );
+                final checkbox = Semantics(
+                  container: true,
+                  button: true,
+                  enabled: true,
+                  checked: selected,
+                  label: 'Select policy row $humanLabel $action',
+                  onTap: () => _toggleSelection(action, !selected),
+                  child: InkWell(
+                    key: ValueKey('roleEditor.policySelect.$action'),
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: () => _toggleSelection(action, !selected),
+                    child: Padding(
+                      padding: const EdgeInsets.all(10),
+                      child: Icon(
+                        selected ? Icons.check_box : Icons.check_box_outline_blank,
+                        color: selected ? const Color(0xFF39D98A) : const Color(0xFF93A5BC),
+                        size: 24,
+                      ),
                     ),
                   ),
-                ),
-              ),
-          ],
+                );
+                final decisionControl = _PolicyDecisionMenu(
+                  key: ValueKey('roleEditor.policyDecision.$action'),
+                  label: 'Decision for $humanLabel',
+                  value: decision,
+                  values: _decisionValues(decision),
+                  onChanged: (value) => _applyDecision(action, value, availableActions),
+                  displayLabel: _roleManagerHumanLabel,
+                );
+                if (narrow) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(children: [checkbox, const SizedBox(width: 8), Expanded(child: label)]),
+                      const SizedBox(height: 8),
+                      decisionControl,
+                    ],
+                  );
+                }
+                return Row(
+                  children: [
+                    checkbox,
+                    const SizedBox(width: 10),
+                    Expanded(child: label),
+                    const SizedBox(width: 12),
+                    decisionControl,
+                  ],
+                );
+              },
+            ),
+            ),
+          ),
         ),
       );
     }
@@ -2001,12 +2079,23 @@ class _RoleAuthorityEditorState extends State<_RoleAuthorityEditor> {
         Padding(
           padding: const EdgeInsets.only(bottom: 10),
           child: Text(
-            _rows.isEmpty ? 'Select the actions this role can use.' : 'Selected actions are saved with one decision each.',
+            'Edit policy decisions. Row checkboxes only select rows for bulk editing.',
             style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF93A5BC)),
           ),
         ),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            OutlinedButton(key: const ValueKey('roleEditor.policySelectAll'), onPressed: availableActions.isEmpty ? null : () => _selectAll(availableActions), child: const Text('Select all')),
+            OutlinedButton(key: const ValueKey('roleEditor.policyClearSelection'), onPressed: selectedCount == 0 ? null : _clearSelection, child: const Text('Clear selection')),
+            Text('$selectedCount selected', style: theme.textTheme.bodySmall?.copyWith(color: const Color(0xFF93A5BC))),
+          ],
+        ),
+        const SizedBox(height: 10),
         SizedBox(
-          height: 64,
+          height: 300,
           child: Scrollbar(
             child: ListView.builder(
               key: const ValueKey('roleEditor.authorityList'),
@@ -2026,19 +2115,56 @@ String _policyRowsSignature(List<AgentRuntimeRolePolicyRow> rows) {
   return rows.map((row) => '${row.action}\u{1f}${row.decision}').join('\u{1e}');
 }
 
-List<AgentRuntimeRolePolicyRow> _toggledRoleAuthorityRows(
-  String action,
-  bool selected,
-  List<AgentRuntimeRolePolicyRow> rows,
-  String defaultDecision,
-) {
-  if (selected) {
-    return rows.where((current) => current.action != action).toList(growable: false);
+class _PolicyDecisionMenu extends StatelessWidget {
+  const _PolicyDecisionMenu({
+    super.key,
+    required this.label,
+    required this.value,
+    required this.values,
+    required this.onChanged,
+    required this.displayLabel,
+  });
+
+  final String label;
+  final String value;
+  final List<String> values;
+  final ValueChanged<String> onChanged;
+  final String Function(String value) displayLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final effectiveValues = _dedupeRoleManagerOptions(values);
+    final effective = effectiveValues.contains(value) ? value : effectiveValues.first;
+    return SizedBox(
+      width: 220,
+      child: PopupMenuButton<String>(
+        tooltip: label,
+        initialValue: effective,
+        onSelected: onChanged,
+        itemBuilder: (context) => [
+          for (final item in effectiveValues)
+            PopupMenuItem<String>(
+              value: item,
+              child: Text(displayLabel(item)),
+            ),
+        ],
+        child: Semantics(
+          button: true,
+          label: label,
+          value: displayLabel(effective),
+          child: InputDecorator(
+            decoration: InputDecoration(labelText: label, isDense: true, border: const OutlineInputBorder()),
+            child: Row(
+              children: [
+                Expanded(child: Text(displayLabel(effective), overflow: TextOverflow.ellipsis)),
+                const Icon(Icons.arrow_drop_down, size: 20),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
-  return [
-    ...rows,
-    AgentRuntimeRolePolicyRow(action: action, decision: defaultDecision),
-  ];
 }
 
 class _RoleEditorDivider extends StatelessWidget {
@@ -2542,6 +2668,7 @@ String _roleManagerHumanLabel(String value) {
     return trimmed;
   }
   const named = {
+    'off': 'Off / absent',
     'allow': 'Allow',
     'deny': 'Deny',
     'approved': 'Approved',
@@ -2553,6 +2680,7 @@ String _roleManagerHumanLabel(String value) {
     'historical': 'Historical',
     'available': 'Available',
     'ownerApproval': 'Owner approval',
+    'orchestratorApproval': 'Orchestrator approval',
     'direct': 'Direct',
     'project': 'Project',
     'global': 'Global',

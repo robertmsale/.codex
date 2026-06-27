@@ -801,6 +801,18 @@ mod tests {
     }
 
     #[test]
+    fn editor_options_expose_all_supported_policy_decisions() {
+        let options = super::editor_options(vec!["owner".to_string()]);
+        assert_eq!(options.policy_decisions, vec![
+            "allow".to_string(),
+            "deny".to_string(),
+            "ownerApproval".to_string(),
+            "orchestratorApproval".to_string(),
+        ]);
+        assert!(!options.policy_decisions.contains(&"off".to_string()));
+    }
+
+    #[test]
     fn starter_default_tool_bundles_expose_intended_role_tools_only() {
         let worker = default_tool_bundle_for_role("worker");
         assert!(worker.contains(&"file.head"));

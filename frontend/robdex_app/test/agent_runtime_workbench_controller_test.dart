@@ -1055,7 +1055,7 @@ void main() {
   });
 
   testWidgets('runtime operations modal closes through visible control and restores shell interactivity', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    await tester.binding.setSurfaceSize(const Size(1400, 1600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final controller = AgentRuntimeWorkbenchController(requestSink: (_, _) {});
     addTearDown(controller.dispose);
@@ -1082,7 +1082,7 @@ void main() {
   });
 
   testWidgets('Agent Runtime controls keep usable semantics after reset-state render and modal dismissal', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    await tester.binding.setSurfaceSize(const Size(1400, 1600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
     await tester.pumpWidget(MaterialApp(
@@ -2403,7 +2403,7 @@ void main() {
   });
 
   testWidgets('Project Settings modal saves every field and exposes only archive and unarchive lifecycle actions', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    await tester.binding.setSurfaceSize(const Size(1400, 1600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final actions = <String>[];
     Map<String, Object?>? saved;
@@ -2585,7 +2585,7 @@ void main() {
   });
 
   testWidgets('Session control plane saves projected fields and dispatches lifecycle actions', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    await tester.binding.setSurfaceSize(const Size(1400, 1600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final actions = <String>[];
     Map<String, Object?>? saved;
@@ -2728,7 +2728,7 @@ void main() {
   });
 
   testWidgets('production host opens full-screen session control plane from toolbar', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    await tester.binding.setSurfaceSize(const Size(1400, 1600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final controller = AgentRuntimeWorkbenchController(requestSink: (_, _) {});
     addTearDown(controller.dispose);
@@ -2746,7 +2746,7 @@ void main() {
   });
 
   testWidgets('session settings normalizes duplicate model dropdown values before render', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    await tester.binding.setSurfaceSize(const Size(1400, 1600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final duplicateModelData = mockAgentRuntimeConnected.copyWith(
       selectedSessionControlPlane: mockAgentRuntimeConnected.selectedSessionControlPlane!.copyWith(
@@ -2773,7 +2773,7 @@ void main() {
   });
 
   testWidgets('production host closes session control plane through visible toolbar close and restores shell interactivity', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    await tester.binding.setSurfaceSize(const Size(1400, 1600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final controller = AgentRuntimeWorkbenchController(requestSink: (_, _) {});
     addTearDown(controller.dispose);
@@ -2796,7 +2796,7 @@ void main() {
   });
 
   testWidgets('toolbar sections menu reaches Command Registry surface', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    await tester.binding.setSurfaceSize(const Size(1400, 1600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final sentRequests = <bindings.AgentRuntimeRequest>[];
     final controller = AgentRuntimeWorkbenchController(requestSink: (_, request) => sentRequests.add(request));
@@ -2880,7 +2880,7 @@ void main() {
   });
 
   testWidgets('production host Danger Zone Archive session and Archive session dispatch typed operations and return to session settings', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    await tester.binding.setSurfaceSize(const Size(1400, 1600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final sentRequests = <bindings.AgentRuntimeRequest>[];
     final controller = AgentRuntimeWorkbenchController(requestSink: (_, request) => sentRequests.add(request));
@@ -2929,7 +2929,7 @@ void main() {
   });
 
   testWidgets('session control plane remains dismissable without a selected session', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    await tester.binding.setSurfaceSize(const Size(1400, 1600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     var closed = false;
 
@@ -3396,7 +3396,7 @@ void main() {
     final update = (sentRequests.single as bindings.AgentRuntimeRequestDispatchOperation).operation as bindings.AgentRuntimeGuiOperationUpdateRoleFromDraft;
     expect(update.draft.capabilities, ['tool.execute_code', 'git.status']);
     expect(update.draft.policyEntries.map((entry) => entry.key), ['tool.execute_code', 'git.status']);
-    expect(update.draft.capabilities, isNot(contains('fs.write')));
+    expect(update.draft.capabilities, isNot(contains('command_registry.decide')));
   });
 
   testWidgets('role manager edits structured draft and dispatches visible values', (tester) async {
@@ -3431,8 +3431,8 @@ void main() {
     expect(find.text('Capabilities', skipOffstage: false), findsNothing);
     expect(find.text('Policy decisions', skipOffstage: false), findsNothing);
     expect(find.text('Allowed recipients', skipOffstage: false), findsOneWidget);
-    expect(find.byKey(const ValueKey('roleEditor.capability.command.registry'), skipOffstage: false), findsNothing);
-    expect(find.byKey(const ValueKey('roleEditor.capability.workflow.memory'), skipOffstage: false), findsNothing);
+    expect(find.byKey(const ValueKey('roleEditor.policySelect.command.registry'), skipOffstage: false), findsNothing);
+    expect(find.byKey(const ValueKey('roleEditor.policySelect.workflow.memory'), skipOffstage: false), findsNothing);
 
     await tester.tap(find.byKey(const ValueKey('roleEditor.model')));
     await tester.pump();
@@ -3443,29 +3443,15 @@ void main() {
     (tester.widget(instructionsField) as dynamic).controller.text = 'Updated runtime instructions.';
     await tester.pump();
 
-    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.policy.command_registry.apply')));
-    final applyRow = tester.getSemantics(find.bySemanticsLabel('Role authority Apply command registry request command_registry.apply'));
-    expect(applyRow.rect.width, greaterThan(0));
-    expect(applyRow.rect.height, greaterThan(0));
-    expect(applyRow.hasFlag(SemanticsFlag.isChecked), isTrue);
-    await tester.tap(find.byKey(const ValueKey('roleEditor.policy.command_registry.apply')));
+    await tester.scrollUntilVisible(find.byKey(const ValueKey('roleEditor.policyDecision.command_registry.apply')), 40, scrollable: find.byType(Scrollable).last);
+    await tester.tap(find.byKey(const ValueKey('roleEditor.policyDecision.command_registry.apply')));
     await tester.pump();
-    await tester.tap(find.text('Allow').last);
-    await tester.pump();
-
-    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.capability.fs.write')));
-    expect(tester.getSemantics(find.bySemanticsLabel('Role authority Write file fs.write')).hasFlag(SemanticsFlag.isChecked), isTrue);
-    await tester.tap(find.byKey(const ValueKey('roleEditor.capability.fs.write')));
-    await tester.pump();
-    expect(tester.getSemantics(find.bySemanticsLabel('Role authority Write file fs.write')).hasFlag(SemanticsFlag.isChecked), isFalse);
-    expect(find.byKey(const ValueKey('roleEditor.policy.fs.write')), findsNothing);
-    await tester.tap(find.byKey(const ValueKey('roleEditor.capability.fs.write')));
-    await tester.pump();
-    expect(tester.getSemantics(find.bySemanticsLabel('Role authority Write file fs.write')).hasFlag(SemanticsFlag.isChecked), isTrue);
-    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.policy.fs.write')));
-    await tester.tap(find.byKey(const ValueKey('roleEditor.policy.fs.write')));
-    await tester.pump();
-    await tester.tap(find.text('Deny').last);
+    expect(find.text('Off / absent'), findsWidgets);
+    expect(find.text('Allow'), findsWidgets);
+    expect(find.text('Deny'), findsWidgets);
+    expect(find.text('Owner approval'), findsWidgets);
+    expect(find.text('Orchestrator approval'), findsWidgets);
+    await tester.tapAt(const Offset(20, 20));
     await tester.pump();
 
     await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.recipient.runtime-safe-builder')));
@@ -3499,8 +3485,8 @@ void main() {
       expect(draft!.model, 'gpt-5.4-mini');
       expect(draft.instructionText, 'Updated runtime instructions.');
       expect(draft.capabilities, contains('command_registry.apply'));
-      expect(draft.policy.any((row) => row.action == 'command_registry.apply' && row.decision == 'allow'), isTrue);
-      expect(draft.policy.any((row) => row.action == 'fs.write' && row.decision == 'deny'), isTrue);
+      expect(draft.policy.any((row) => row.action == 'command_registry.apply' && row.decision == 'ownerApproval'), isTrue);
+      expect(draft.policy.any((row) => row.action == 'fs.write' && row.decision == 'ownerApproval'), isTrue);
       expect(draft.allowedRecipients, contains('owner'));
       expect(draft.allowedRecipients, isNot(contains('runtime-safe-builder')));
       expect(draft.routingReservedActions, contains('command_registry.apply'));
@@ -3510,7 +3496,7 @@ void main() {
     }
   });
 
-  testWidgets('role authority selected rows stay enabled when policy decisions are delayed', (tester) async {
+  testWidgets('role authority policy editor separates selection from decisions and serializes decisions', (tester) async {
     AgentRuntimeRoleEditorDraft? saved;
     final roleAdmin = AgentRuntimeRoleAdminData(
       title: mockAgentRuntimeRoleAdminSelected.title,
@@ -3534,7 +3520,7 @@ void main() {
         reservedActions: mockAgentRuntimeRoleEditorOptions.reservedActions,
       ),
     );
-    await tester.binding.setSurfaceSize(const Size(1200, 1000));
+    await tester.binding.setSurfaceSize(const Size(1400, 1600));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(MaterialApp(
       home: AgentRuntimeRoleManagerPage(
@@ -3544,21 +3530,51 @@ void main() {
     ));
     await tester.pump();
 
-    final writeLabel = find.bySemanticsLabel('Remove · Apply command registry request\ncommand_registry.apply');
-    await tester.ensureVisible(find.byKey(const ValueKey('roleEditor.capability.command_registry.apply')));
+    await tester.scrollUntilVisible(find.byKey(const ValueKey('roleEditor.policyDecision.command_registry.apply')), 40, scrollable: find.byType(Scrollable).last);
+    await tester.tap(find.byKey(const ValueKey('roleEditor.policyDecision.command_registry.apply')));
     await tester.pump();
-    final before = tester.getSemantics(writeLabel);
-    expect(before.rect.width, greaterThan(0));
-    expect(before.rect.height, greaterThan(0));
-    await tester.tap(find.byKey(const ValueKey('roleEditor.capability.command_registry.apply')));
+    expect(find.text('Off / absent'), findsWidgets);
+    expect(find.text('Allow'), findsWidgets);
+    expect(find.text('Deny'), findsWidgets);
+    expect(find.text('Owner approval'), findsWidgets);
+    expect(find.text('Orchestrator approval'), findsWidgets);
+    await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'Deny').first);
     await tester.pump();
-    expect(find.byKey(const ValueKey('roleEditor.policy.command_registry.apply')), findsNothing);
+
+    await tester.scrollUntilVisible(find.byKey(const ValueKey('roleEditor.policySelect.command_registry.apply')), 40, scrollable: find.byType(Scrollable).last);
+    await tester.tap(find.byKey(const ValueKey('roleEditor.policySelect.command_registry.apply')));
+    await tester.pump();
+    await tester.scrollUntilVisible(find.byKey(const ValueKey('roleEditor.policySelect.command_registry.decide')), 40, scrollable: find.byType(Scrollable).last);
+    await tester.tap(find.byKey(const ValueKey('roleEditor.policySelect.command_registry.decide')));
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('roleEditor.policyDecision.command_registry.decide')));
+    await tester.pump();
+    await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'Owner approval').first);
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('roleEditor.policyClearSelection')));
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('roleEditor.policyDecision.command_registry.decide')));
+    await tester.pump();
+    await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'Off / absent').first);
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('roleEditor.policySelectAll')));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('roleEditor.policyClearSelection')));
+    await tester.pump();
 
     await tester.ensureVisible(find.widgetWithText(OutlinedButton, 'Save Version'));
     await tester.tap(find.widgetWithText(OutlinedButton, 'Save Version'));
     await tester.pump();
     expect(saved, isNotNull);
-    expect(saved!.policy.any((row) => row.action == 'command_registry.apply'), isFalse);
+    expect(saved!.policy.any((row) => row.action == 'command_registry.apply' && row.decision == 'ownerApproval'), isTrue);
+    expect(saved!.policy.any((row) => row.action == 'command_registry.decide'), isFalse);
+    expect(saved!.capabilities, contains('command_registry.apply'));
+    expect(saved!.capabilities, isNot(contains('command_registry.decide')));
+
   });
 
   testWidgets('role manager reloads same-count authority edits from refreshed projection', (tester) async {

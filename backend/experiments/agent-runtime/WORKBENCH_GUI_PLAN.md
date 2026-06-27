@@ -120,10 +120,21 @@ Runtime Operations launches Role Admin as a full-screen Role Manager page. Rust 
 
 Role create/update uses inline editor `instructionText` and persists it to immutable `role_versions.instruction_text`; the UI never creates prompt files. Server validation reuses canonical role manifest validation, DB routing validation, and command-policy validation. The shared Role Manager has one role-authority editor where each action row carries its policy decision; validate/save drafts derive capabilities and policy from those rows before dispatch so the backend policy-key invariant remains the source of truth. Create/update/activate/archive/unarchive mutations wait for projection/delta evidence, while metadata/options, validation, detail, version, and export operations return direct typed results.
 
-Role authority options are concrete backend action ids only. Group labels such
-as `command.registry` and `workflow.memory` are not selectable capabilities;
-QA automation targets rows by stable labels that contain the product label and
-exact action id, and visible rows expose checked state through semantics.
+Role authority is a policy editor, not a capability-toggle checklist. Each row
+represents one concrete backend action id, shows a readable action label plus
+the canonical action id, has a row-selection checkbox used only for bulk
+editing, and has a separate decision control. The supported decisions are
+`Off / absent`, `Allow`, `Deny`, `Owner approval`, and `Orchestrator approval`.
+`Off / absent` removes the action from both draft capabilities and policy;
+every other decision keeps the action in both places with the exact policy
+decision value. `Select all` and `Clear selection` affect only row-selection
+state. When rows are selected, changing the decision on one selected row applies
+that decision to all selected rows; otherwise it changes only that row. Save
+Version serializes capabilities and policy from these policy decisions and must
+keep the backend invariant that capability keys exactly match policy keys. Group
+labels such as `command.registry` and `workflow.memory` are not selectable
+capabilities; QA automation targets separate row-selection and decision controls
+by stable labels containing the product label and exact action id.
 Manual Connect to URL immediately moves the runtime state out of Not connected
 or shows the typed connection error. Session Settings is a full-screen route
 with a `Close session settings` affordance in both selected-session and

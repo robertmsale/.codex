@@ -6197,6 +6197,32 @@ mod tests {
         assert_eq!(current_snapshot.capabilities, vec!["fs.read".to_string()]);
         assert_eq!(current_snapshot.policy.get("fs.read"), Some(&crate::roles::ManifestDecision::Allow));
         assert!(!current_snapshot.policy.contains_key("tool.execute_code"));
+        let mut all_decisions = role_editor_draft_json("gui-role", "1.0.2", "inline gui role instructions all decisions");
+        all_decisions["capabilities"] = json!(["file.head", "file.tail", "git.status", "git.diff"]);
+        all_decisions["policy"] = json!({
+            "file.head": "allow",
+            "file.tail": "deny",
+            "git.status": "ownerApproval",
+            "git.diff": "orchestratorApproval"
+        });
+        let (status, validation) = request_json(router.clone(), Method::POST, "/roles/editor/validate", all_decisions.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(validation["valid"], true);
+        let (status, updated) = request_json(router.clone(), Method::POST, "/roles/gui-role/versions", all_decisions).await;
+        assert_eq!(status, StatusCode::OK);
+        let all_decisions_version = updated["versionId"].as_str().expect("all decisions version").to_string();
+        let all_decisions_snapshot = db::current_role_snapshot(&test_db.pool, "gui-role").await.expect("all decisions role snapshot");
+        assert_eq!(all_decisions_snapshot.role_version_id.to_string(), all_decisions_version);
+        assert_eq!(
+            all_decisions_snapshot.capabilities,
+            vec!["file.head".to_string(), "file.tail".to_string(), "git.status".to_string(), "git.diff".to_string()]
+        );
+        assert_eq!(all_decisions_snapshot.policy.get("file.head"), Some(&crate::roles::ManifestDecision::Allow));
+        assert_eq!(all_decisions_snapshot.policy.get("file.tail"), Some(&crate::roles::ManifestDecision::Deny));
+        assert_eq!(all_decisions_snapshot.policy.get("git.status"), Some(&crate::roles::ManifestDecision::OwnerApproval));
+        assert_eq!(all_decisions_snapshot.policy.get("git.diff"), Some(&crate::roles::ManifestDecision::OrchestratorApproval));
+        assert!(!all_decisions_snapshot.capabilities.contains(&"tool.execute_code".to_string()));
+        assert!(!all_decisions_snapshot.policy.contains_key("tool.execute_code"));
         let mut mismatched = role_editor_draft_json("gui-role", "1.0.2", "inline gui role instructions mismatch");
         mismatched["capabilities"] = json!(["tool.execute_code"]);
         mismatched["policy"] = json!({"fs.read": "allow"});
