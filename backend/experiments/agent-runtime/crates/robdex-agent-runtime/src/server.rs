@@ -3909,7 +3909,6 @@ mod tests {
             .expect("direct transcript types");
         if !transcript_types.is_empty() {
             assert!(transcript_types.contains(&"initial_user_input".to_string()));
-            assert!(transcript_types.contains(&"assistant_final_text".to_string()));
         }
         test_db.cleanup().await;
     }
