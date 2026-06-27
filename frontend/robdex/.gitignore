@@ -1,0 +1,43 @@
+# Xcode
+*.xcworkspace
+!default.xcworkspace
+
+# Swift Package Manager
+.swiftpm/
+.build/
+
+# CocoaPods
+Pods/
+
+# Carthage
+Carthage/Build/
+
+# Xcode specific
+*.xcuserstate
+*.xcuserdatad
+*.pbxuser
+*.xcscmblueprint
+
+# Derived data
+DerivedData/
+
+# Archives
+*.xcarchive
+
+# Symbols
+*.dSYM.zip
+*.dSYM
+
+# Temporary files
+*.tmp
+*.swp
+*.lock
+
+# Build Products
+build/
+
+# Log files
+*.log
+
+# Environment variables
+.env

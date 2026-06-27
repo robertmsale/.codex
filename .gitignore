@@ -132,6 +132,7 @@ nohup.out
 .worktrees/
 .zed/
 robdex/
+!frontend/robdex
 !configs/
 !configs/robdex/
 !configs/robdex/profiles/
