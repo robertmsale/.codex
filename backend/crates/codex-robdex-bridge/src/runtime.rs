@@ -5420,7 +5420,7 @@ mod tests {
                                     "reviewerThreadId": "reviewer-1",
                                     "requirementSetId": "requirements-alpha",
                                     "status": "inReview",
-                                    "latestVerdictPacket": {"passedScoped": {"verdict": "pass"}},
+                                    "latestVerdictPacket": {"passedScoped": {"verdict": "pass", "evidence": [{"type":"sourceInspection","value":"Reviewed persisted progress evidence for passedScoped in the current test fixture."}]}},
                                     "updatedAt": 1
                                 }
                             },
@@ -5523,7 +5523,7 @@ mod tests {
                                             }
                                         }
                                     },
-                                    "latestVerdictPacket": {"mustProve": {"verdict": "acceptedBlocked"}},
+                                    "latestVerdictPacket": {"mustProve": {"verdict": "acceptedBlocked", "evidence": [{"type":"sourceInspection","value":"Reviewed accepted owner-decision blocker evidence for mustProve."}]}},
                                     "updatedAt": 1
                                 }
                             },
@@ -5676,7 +5676,7 @@ mod tests {
                                             }
                                         }
                                     },
-                                    "latestVerdictPacket": {"needsOwnerDecision": {"verdict": "acceptedBlocked"}},
+                                    "latestVerdictPacket": {"needsOwnerDecision": {"verdict": "acceptedBlocked", "evidence": [{"type":"sourceInspection","value":"Reviewed accepted owner-decision blocker evidence for needsOwnerDecision."}]}},
                                     "updatedAt": 100
                                 }
                             },

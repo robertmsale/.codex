@@ -8352,7 +8352,7 @@ mod tests {
                                     "reviewerThreadId": "reviewer-1",
                                     "requirementSetId": "web-gui-contract",
                                     "status": "passed",
-                                    "latestVerdictPacket": {"nativeGuiIsSourceOfTruth": {"verdict": "pass"}},
+                                    "latestVerdictPacket": {"nativeGuiIsSourceOfTruth": {"verdict": "pass", "evidence": [{"type":"sourceInspection","value":"Reviewed persisted pass evidence for nativeGuiIsSourceOfTruth."}]}},
                                     "updatedAt": 12
                                 }
                             },
