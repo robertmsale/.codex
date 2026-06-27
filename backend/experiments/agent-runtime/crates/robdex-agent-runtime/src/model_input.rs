@@ -437,10 +437,23 @@ pub fn runtime_developer_messages(snapshot: &ContextSnapshotRecord, command_cont
             metadata: json!({"source": "role_transition_summary", "roleEpoch": snapshot.role_epoch, "contextEpoch": snapshot.context_epoch, "contextEventWatermark": snapshot.context_event_watermark}),
         });
     }
-    messages.push(RuntimeInputMessage {
-        text: command_context.text.clone(),
-        metadata: command_context.metadata.clone(),
-    });
+    let native_affordance_count = snapshot
+        .snapshot
+        .pointer("/tools/nativeAffordanceCount")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    let command_context_text = format!(
+        "<command_context id=\"{}\" visible_command_count=\"{}\" native_affordance_count=\"{}\">\n{}\nInspect live commands with cmd.describe() or cmd[\"name\"].method.describe() inside execute_code. The full command catalog is not included in this request.\n</command_context>",
+        xml_escape(&command_context.evidence.id),
+        command_context.evidence.visible_count,
+        native_affordance_count,
+        command_context.text
+    );
+    let mut metadata = command_context.metadata.clone();
+    metadata["visibleCommandCount"] = json!(command_context.evidence.visible_count);
+    metadata["nativeAffordanceCount"] = json!(native_affordance_count);
+    metadata["describeGuidance"] = json!("cmd.describe() or cmd[\"name\"].method.describe() inside execute_code");
+    messages.push(RuntimeInputMessage { text: command_context_text, metadata });
     messages
 }
 
@@ -692,8 +705,8 @@ mod tests {
             previous_snapshot: Some(json!({"role": {"epoch": "operator:2.0.0:test"}})),
         };
         let command_context = crate::command_registry::RuntimeCommandContextMessage {
-            text: "<command_context>verbose</command_context>".to_string(),
-            metadata: json!({"source": "command_context"}),
+            text: "Runtime command context unchanged: cmdctx-test.".to_string(),
+            metadata: json!({"source": "runtime_command_context", "commandContextId": "cmdctx-test", "visibleCommandCount": 0, "catalogIncluded": false}),
             evidence: CommandContextEvidence {
                 id: "cmdctx-test".to_string(),
                 catalog_included: false,
@@ -707,7 +720,11 @@ mod tests {
         let messages = runtime_developer_messages(&snapshot, &command_context);
         let rendered = serde_json::to_string(&messages).unwrap();
         assert!(!rendered.contains("<runtime_context"), "{rendered}");
-        assert!(rendered.contains("<command_context"), "{rendered}");
+        assert!(rendered.contains("<command_context id=\\\"cmdctx-test\\\" visible_command_count=\\\"0\\\" native_affordance_count=\\\"0\\\""), "{rendered}");
+        assert!(rendered.contains("cmd.describe()"), "{rendered}");
+        assert!(rendered.contains("cmd[\\\"name\\\"].method.describe()"), "{rendered}");
+        assert!(rendered.contains("The full command catalog is not included"), "{rendered}");
+        assert!(rendered.contains("nativeAffordanceCount"), "{rendered}");
         assert_eq!(messages.len(), 1);
     }
 

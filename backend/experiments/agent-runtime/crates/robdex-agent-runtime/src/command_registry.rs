@@ -531,23 +531,17 @@ pub fn runtime_command_context_message(commands: &[CommandVersion], previous: Op
         .cloned()
         .collect::<Vec<_>>();
     let unchanged = previous.map(|prior| prior.id == id).unwrap_or(false);
-    let catalog_included = !unchanged;
+    let catalog_included = false;
     let mut lines = Vec::new();
     if unchanged {
-        lines.push(format!("Runtime command context unchanged: {id}. Use cmd.describe() or per-command .describe() inside execute_code if command details are needed."));
+        lines.push(format!("Runtime command context unchanged: {id}."));
     } else if previous.is_some() {
-        lines.push(format!("Runtime command context changed: {id}. visible={} added={} removed={} changed={}. Use cmd.describe() for live details.", summaries.len(), added.len(), removed.len(), changed.len()));
+        lines.push(format!("Runtime command context changed: {id}. visible={} added={} removed={} changed={}.", summaries.len(), added.len(), removed.len(), changed.len()));
         if !added.is_empty() { lines.push(format!("Added commands: {}", added.join(", "))); }
         if !removed.is_empty() { lines.push(format!("Removed commands: {}", removed.join(", "))); }
         if !changed.is_empty() { lines.push(format!("Changed commands: {}", changed.join(", "))); }
     } else {
-        lines.push(format!("Runtime command context: {id}. visible={}. Use cmd.describe() for live details and request_command_registry_change when a needed command is missing or outdated.", summaries.len()));
-    }
-    if catalog_included {
-        lines.push("Visible command catalog:".to_string());
-        for summary in &summaries {
-            lines.push(format!("- cmd[\"{}\"].{} action={} version={} scope={} project={} :: {}", summary.starlark_object, summary.starlark_method, summary.action_id, summary.command_version_id, summary.scope_type, summary.project_key.clone().unwrap_or_else(|| "-".to_string()), summary.model_description));
-        }
+        lines.push(format!("Runtime command context: {id}. visible={}.", summaries.len()));
     }
     let evidence = CommandContextEvidence {
         id: id.clone(),
@@ -560,7 +554,7 @@ pub fn runtime_command_context_message(commands: &[CommandVersion], previous: Op
     };
     RuntimeCommandContextMessage {
         text: lines.join("\n"),
-        metadata: json!({"source":"runtime_command_context", "commandContextId": id, "catalogIncluded": catalog_included}),
+        metadata: json!({"source":"runtime_command_context", "commandContextId": id, "visibleCommandCount": evidence.visible_count, "catalogIncluded": catalog_included}),
         evidence,
     }
 }
@@ -1396,12 +1390,15 @@ mod cache_stable_discovery_tests {
         let first = runtime_command_context_message(&one, None);
         let changed = runtime_command_context_message(&two, Some(&first.evidence));
         let unchanged = runtime_command_context_message(&two, Some(&changed.evidence));
-        assert!(first.evidence.catalog_included);
-        assert!(changed.evidence.catalog_included);
+        assert!(!first.evidence.catalog_included);
+        assert!(!changed.evidence.catalog_included);
         assert_eq!(changed.evidence.added_count, 1);
         assert!(!unchanged.evidence.catalog_included);
         assert!(unchanged.text.contains("unchanged"));
+        assert!(!first.text.contains("Visible command catalog"));
+        assert!(!changed.text.contains("Visible command catalog"));
         assert_eq!(unchanged.metadata["source"], "runtime_command_context");
+        assert_eq!(unchanged.metadata["visibleCommandCount"], 2);
     }
 
     #[test]
