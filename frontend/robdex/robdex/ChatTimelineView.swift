@@ -205,7 +205,7 @@ private struct ChatTimelineBackground: View {
             author: "You",
             detail: nil,
             time: "10:12",
-            body: "Clean up the release notes and attach proof before handing this back.",
+            body: "Clean up the **release notes** and attach `screenshot evidence` before handing this back.",
             output: nil,
             kind: .message,
             alignment: .trailing
@@ -215,7 +215,7 @@ private struct ChatTimelineBackground: View {
             author: "Runtime allow",
             detail: nil,
             time: "10:12",
-            body: "I’ll review the current notes, make the smallest safe edit, then capture evidence for Requirements review.",
+            body: "I’ll review the current notes, make the smallest safe edit, then capture evidence for **Requirements review**.",
             output: nil,
             kind: .message,
             alignment: .leading

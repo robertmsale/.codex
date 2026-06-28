@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import Textual
 
 struct ChatMessageView: View {
     let entry: ChatEntry
@@ -21,22 +22,14 @@ struct ChatMessageView: View {
 
                 switch entry.kind {
                 case .message:
-                    Text(entry.body)
-                        .font(.system(size: 15))
-                        .lineSpacing(3)
-                        .foregroundStyle(.primary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    MessageMarkdownView(markdown: entry.body)
 
                 case .streaming:
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         ProgressView()
                             .controlSize(.small)
 
-                        Text(entry.body)
-                            .font(.system(size: 15))
-                            .lineSpacing(3)
-                            .foregroundStyle(.primary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        MessageMarkdownView(markdown: entry.body)
                     }
 
                 case .toolResult:
@@ -72,6 +65,18 @@ struct ChatMessageView: View {
                 Spacer(minLength: 52)
             }
         }
+    }
+}
+
+private struct MessageMarkdownView: View {
+    let markdown: String
+
+    var body: some View {
+        InlineText(markdown: markdown)
+            .font(.system(size: 15))
+            .foregroundStyle(.primary)
+            .fixedSize(horizontal: false, vertical: true)
+            .textual.textSelection(.enabled)
     }
 }
 
@@ -360,7 +365,7 @@ enum ChatEntryKind {
             author: "You",
             detail: nil,
             time: "10:12",
-            body: "Clean up the release notes and attach proof before handing this back.",
+            body: "Clean up the **release notes** and attach `screenshot evidence` before handing this back.",
             output: nil,
             kind: .message,
             alignment: .trailing
@@ -370,7 +375,7 @@ enum ChatEntryKind {
             author: "Runtime allow",
             detail: nil,
             time: "10:12",
-            body: "I’ll review the current notes, make the smallest safe edit, then capture evidence for Requirements review.",
+            body: "I’ll review the current notes, make the smallest safe edit, then capture evidence for **Requirements review**.",
             output: nil,
             kind: .message,
             alignment: .leading
@@ -380,7 +385,7 @@ enum ChatEntryKind {
             author: "Runtime allow",
             detail: "responding",
             time: "10:13",
-            body: "Checking the workspace state…",
+            body: "Checking the `workspace` state…",
             output: nil,
             kind: .streaming,
             alignment: .leading

@@ -132,7 +132,7 @@ nohup.out
 .worktrees/
 .zed/
 robdex/
-!frontend/robdex/
+!frontend/robdex
 !configs/
 !configs/robdex/
 !configs/robdex/profiles/
@@ -152,3 +152,5 @@ generated_images/
 /.dart-tool/
 /.dartServer/
 /.flutter/
+*.sqlite
+*.sqlite*
