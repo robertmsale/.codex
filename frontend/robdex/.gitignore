@@ -38,6 +38,6 @@ build/
 
 # Log files
 *.log
-
+!robdex/
 # Environment variables
 .env
